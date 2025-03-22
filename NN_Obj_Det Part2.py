@@ -3,7 +3,7 @@ import glob
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader #, random_split
+from torch.utils.data import Dataset, DataLoader#, random_split
 from torchvision import models, transforms
 from PIL import Image
 from torch.utils.tensorboard import SummaryWriter
@@ -17,19 +17,19 @@ import numpy as np
 class ResNet18Backbone(nn.Module):
     def __init__(self):
         super(ResNet18Backbone, self).__init__()
-        resnet = models.resnet18(pretrained=True)
-        # Remove fully connected layer: keep convolutional feature extractor
+        resnet = models.resnet18(weights='IMAGENET1K_V1')
+        # Remove the fully connected layer to retain only the convolutional feature extractor.
         self.features = nn.Sequential(
-            resnet.conv1,  
+            resnet.conv1,
             resnet.bn1,
             resnet.relu,
             resnet.maxpool,
             resnet.layer1,
             resnet.layer2,
             resnet.layer3,
-            resnet.layer4  # Output: (batch, 512, H, W) with H,W ~7 for 224x224 input
+            resnet.layer4  # Output: (batch, 512, H, W), typically ~7x7 for 224x224 input.
         )
-        
+    
     def forward(self, x):
         return self.features(x)
 
@@ -42,7 +42,7 @@ class DetectionHead(nn.Module):
             nn.ReLU(),
             nn.Conv2d(256, num_outputs, kernel_size=1)
         )
-        # Use Adaptive Average Pooling to collapse spatial dimensions for a single prediction per image
+        # Adaptive Average Pooling to collapse spatial dimensions into one prediction per image.
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
     
     def forward(self, x):
@@ -66,12 +66,12 @@ class ObjectDetectionModel(nn.Module):
 # ==========================
 # 2. Dataset and Data Augmentation
 # ==========================
-class VehiclesDataset(Dataset):
+class DucksDataset(Dataset):
     def __init__(self, images_dir, annotations_dir, transform=None):
         """
         Args:
-            images_dir (str): Directory with images.
-            annotations_dir (str): Directory with annotation text files.
+            images_dir (str): Directory containing duck images.
+            annotations_dir (str): Directory containing annotation text files.
             transform (callable, optional): Optional transform to be applied on an image.
         """
         self.images_paths = sorted(glob.glob(os.path.join(images_dir, "*")))
@@ -86,7 +86,7 @@ class VehiclesDataset(Dataset):
         img_path = self.images_paths[idx]
         image = Image.open(img_path).convert("RGB")
         
-        # Load annotation from corresponding txt file
+        # Load corresponding annotation from a .txt file
         base = os.path.splitext(os.path.basename(img_path))[0]
         ann_path = os.path.join(os.path.dirname(self.annotations_paths[0]), base + ".txt")
         with open(ann_path, "r") as f:
@@ -94,7 +94,7 @@ class VehiclesDataset(Dataset):
             # Expecting: center_x center_y width height confidence
             bbox = np.array([float(x) for x in line.split()], dtype=np.float32)
         
-        # Apply data augmentation / transformation
+        # Apply data augmentation / transformation if provided
         if self.transform:
             image = self.transform(image)
         
@@ -104,18 +104,17 @@ class VehiclesDataset(Dataset):
 
 # Define data augmentation and preprocessing transforms
 train_transforms = transforms.Compose([
-    transforms.Resize((256, 256)),
-    transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
-    transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406],
                          std=[0.229, 0.224, 0.225])
 ])
 
 val_transforms = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),   
     transforms.Normalize(mean=[0.485, 0.456, 0.406],
                          std=[0.229, 0.224, 0.225])
 ])
@@ -123,7 +122,6 @@ val_transforms = transforms.Compose([
 # ==========================
 # 3. Loss Functions and Metrics
 # ==========================
-
 def detection_loss(predictions, targets):
     """
     Combines MSE loss for bounding box regression and BCE loss for confidence.
@@ -133,10 +131,10 @@ def detection_loss(predictions, targets):
     mse_loss = nn.MSELoss()
     bce_loss = nn.BCELoss()
     
-    # Regression loss for bbox coordinates
+    # Regression loss for bounding box coordinates
     reg_loss = mse_loss(predictions[:, :4], targets[:, :4])
     
-    # Confidence loss (target confidence is assumed to be 1)
+    # Confidence loss (assuming target confidence is 1 if duck present)
     conf_pred = torch.sigmoid(predictions[:, 4])
     conf_target = targets[:, 4]
     conf_loss = bce_loss(conf_pred, conf_target)
@@ -146,9 +144,9 @@ def detection_loss(predictions, targets):
 def iou_metric(pred_box, true_box):
     """
     Calculate Intersection over Union (IoU) for a single prediction and true box.
-    Boxes are expected in format [center_x, center_y, width, height] in normalized coordinates.
+    Boxes are in the format [center_x, center_y, width, height] (normalized coordinates).
     """
-    # Convert from center to (x1, y1, x2, y2)
+    # Convert center box format to (x1, y1, x2, y2)
     def to_corners(box):
         cx, cy, w, h = box
         x1 = cx - w / 2
@@ -180,15 +178,15 @@ def iou_metric(pred_box, true_box):
 # ==========================
 # 4. Data Partitioning and DataLoaders
 # ==========================
-def create_dataloaders(root_dir, batch_size=8, val_split=0.2):
-    # Directories for training and validation
-    train_images_dir = os.path.join(root_dir, "train", "images")
-    train_ann_dir = os.path.join(root_dir, "train", "annotations")
-    val_images_dir = os.path.join(root_dir, "val", "images")
-    val_ann_dir = os.path.join(root_dir, "val", "annotations")
+def create_dataloaders(root_dir, batch_size=8):
+    # Directories for training and validation within the Ducks dataset
+    train_images_dir = os.path.join(root_dir, "images", "train")
+    train_ann_dir = os.path.join(root_dir, "labels", "train")
+    val_images_dir = os.path.join(root_dir, "images", "val")
+    val_ann_dir = os.path.join(root_dir, "labels", "val")
     
-    train_dataset = VehiclesDataset(train_images_dir, train_ann_dir, transform=train_transforms)
-    val_dataset = VehiclesDataset(val_images_dir, val_ann_dir, transform=val_transforms)
+    train_dataset = DucksDataset(train_images_dir, train_ann_dir, transform=train_transforms)
+    val_dataset = DucksDataset(val_images_dir, val_ann_dir, transform=val_transforms)
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
@@ -202,7 +200,7 @@ def train_model(model, train_loader, val_loader, num_epochs=20, learning_rate=1e
     model = model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     
-    writer = SummaryWriter("runs/vehicle_detection")
+    writer = SummaryWriter("/Users/Yoni Ben-Zvi/VSCodeProjects/CV3/runs/duck_detection")
     
     global_step = 0
     for epoch in range(num_epochs):
@@ -239,7 +237,6 @@ def train_model(model, train_loader, val_loader, num_epochs=20, learning_rate=1e
                 
                 # Calculate IoU for each sample
                 for pred, true in zip(outputs, targets):
-                    # Convert predictions and true boxes (first 4 values)
                     pred_box = pred[:4].cpu().numpy()
                     true_box = true[:4].cpu().numpy()
                     iou = iou_metric(pred_box, true_box)
@@ -258,12 +255,12 @@ def train_model(model, train_loader, val_loader, num_epochs=20, learning_rate=1e
 # 6. Main Execution
 # ==========================
 if __name__ == "__main__":
-    # Root directory where the dataset is located
-    dataset_root = "/Users/Yoni Ben-Zvi/VSCodeProjects/CV3/dataset"  # TODO: Update
+    # Set the root directory where the Ducks dataset is located.
+    dataset_root = "/Users/Yoni Ben-Zvi/VSCodeProjects/CV3/ducks_dataset"
     train_loader, val_loader = create_dataloaders(dataset_root, batch_size=8)
     
     model = ObjectDetectionModel()
     train_model(model, train_loader, val_loader, num_epochs=20, learning_rate=1e-4)
     
-    # Save the trained model
-    torch.save(model.state_dict(), "object_detection_model.pth")
+    # Save the trained model.
+    torch.save(model.state_dict(), "/Users/Yoni Ben-Zvi/VSCodeProjects/CV3/ducks_dataset/duck_object_detection_model.pth")
